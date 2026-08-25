@@ -28,7 +28,7 @@ use rquickjs::{Context, Ctx, Function, Object, Runtime};
 
 use crate::profile::{ColorSlot, Profile, Rgb};
 use crate::terminal::cell::{Attrs, Color, EmuCell, UnderlineStyle, CONTINUATION};
-use crate::terminal::emu::{CursorShape, Emulator};
+use crate::terminal::emu::{ClipboardValidator, CursorShape, Emulator};
 
 const XTERM_BUNDLE: &str = include_str!("../../assets/xtermjs/xterm-headless.js");
 const UNICODE11: &str = include_str!("../../assets/xtermjs/addon-unicode11.js");
@@ -136,6 +136,7 @@ pub struct XtermJsEmu {
     /// consequence rather than a new fact, and the earliest message names the
     /// cause. Behind a lock because the reads that can fault take `&self`.
     fault: Mutex<Option<String>>,
+    clipboard_validator: ClipboardValidator,
 }
 
 /// Render a failed JS call as a message worth reading.
@@ -199,6 +200,7 @@ impl XtermJsEmu {
             rows,
             profile: *profile,
             fault: Mutex::new(None),
+            clipboard_validator: ClipboardValidator::unsupported(),
         };
         emu.sync_size();
         Ok(emu)
@@ -368,6 +370,7 @@ fn decode_into(out: &mut Vec<Vec<EmuCell>>, chars: &str, meta: &[i32], cols: usi
 
 impl Emulator for XtermJsEmu {
     fn process(&mut self, bytes: &[u8]) {
+        self.clipboard_validator.process(bytes);
         // Fed as bytes rather than as a string on purpose: xterm.js runs its
         // own incremental UTF-8 decoder over a byte array and carries a
         // partial sequence across calls, which is what keeps a multi-byte
@@ -384,6 +387,7 @@ impl Emulator for XtermJsEmu {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+            .or_else(|| self.clipboard_validator.fault())
     }
 
     fn take_pending_writes(&mut self) -> Vec<u8> {
@@ -518,6 +522,9 @@ mod tests {
             // `isAttributeDefault()`, and the color is absent from the line's
             // extended attributes while remaining in the current SGR state.
             underline_color_needs_a_style: true,
+            // OSC 52 is intentionally unsupported until the clipboard addon
+            // can satisfy the same contract as the native backends.
+            clipboard_unsupported: true,
         }
     );
 }
